@@ -77,30 +77,26 @@ Traced the complete sequential pipeline:
 * Only `.env` configuration, Caddy reverse proxy on port 443, and NSSM Windows service supervisor are required.
 
 ### 11. Automated Test Audit & Critical-Safety Remediation
-* **Total Automated Tests**: **52 passed**, 0 failed, 0 skipped.
-* **Execution Command**: `python -m pytest backend/tests -v` (Passed in 1.23 seconds).
-* **Critical-Safety Remediation Verification**:
-  1. **Daily Loss Enforcement (`test_daily_loss_limit_blocks_new_orders`, `test_daily_loss_retrieval_failure_fails_closed`)**:
-     - *Verified*: Today's cumulative realized loss is queried directly from `trades` in MySQL (`TradeRepository.get_daily_realized_loss`).
-     - *Verified*: Floating unrealized loss from open positions is included in circuit breaker checks (`settings.INCLUDE_FLOATING_LOSS_IN_DAILY_LOSS = True`).
-     - *Verified*: Fails closed (`SIGNAL_REJECTED` / `SAFETY_DATA_UNAVAILABLE`) if daily risk data cannot be retrieved from the database.
-  2. **Risk Percentage Enforcement (`test_webhook_cannot_increase_risk_beyond_backend_limit`, `test_signal_service_caps_excessive_risk_in_payload`)**:
-     - *Verified*: Hard backend cap enforced via `settings.MAX_RISK_PERCENT_PER_TRADE` (2.0%).
-     - *Verified*: Incoming webhook signals cannot request greater risk; excessive values are clamped safely to the backend cap.
-  3. **Durable Idempotency & Concurrency (`test_persistent_idempotency_database_constraint`)**:
-     - *Verified*: Stable hash and unique DB constraint on `webhook_events.payload_hash` prevent dual executions across restarts and concurrent requests.
-     - *Verified*: Uncertain execution outcomes do not auto-resubmit orders.
-  4. **Strict Timestamp Validation (`test_timestamp_validator_accepts_fresh_unix_and_iso`, `test_timestamp_validator_rejects_stale_alert`, `test_timestamp_validator_rejects_malformed_timestamp`)**:
-     - *Verified*: TimestampValidator accepts Unix epoch (s/ms) and ISO 8601 strings.
-     - *Verified*: Rejects malformed timestamps and stale alerts exceeding `ALERT_TIMESTAMP_TOLERANCE_SECONDS` (300s). No silent exceptions.
-  5. **Durable Webhook Processing & Startup Recovery (`test_durable_webhook_recovery_processes_pending_events`)**:
-     - *Verified*: Acknowledged webhooks persist status `RECEIVED` before dispatch.
-     - *Verified*: `WebhookRecoveryService` drains pending events on application restart without double-trading.
-  6. **Database Safety & Readiness**:
-     - *Verified*: System enforces database availability upon startup and during risk evaluation, failing closed if unavailable.
+### 11. Automated Test Audit & Critical-Safety Remediation
+* **Total Automated Tests**: **56 passed**, 0 failed, 0 skipped.
+* **Execution Command**: `python -m pytest backend/tests -v` (Passed in 1.37 seconds).
+* **Test Harness Breakdown & Infrastructure Transparency**:
+  * **In-Memory SQLite Database & Constraint Tests (`test_database_layer.py`)**: 4 tests verifying ORM inserts, updates, rollback atomicity, and table-level unique constraints (`idx_webhook_events_uuid`, `idx_webhook_events_hash`).
+  * **Mock MT5 Adapter Tests (`test_broker_interface.py`, `test_trading_engine.py`, `test_reconciliation.py`, `test_safety_remediation.py`)**: 51 tests covering complete order lifecycle, broker failure paths, uncertain retcodes (10006, 10018), post-crash reconciliation, and circuit breakers.
+  * **End-to-End Paper Flow Simulation (`test_e2e_simulation.py`)**: 1 test validating full chain from TradingView webhook $\rightarrow$ Signal $\rightarrow$ Risk $\rightarrow$ Mock broker execution $\rightarrow$ Database $\rightarrow$ Telegram.
+  * **Live/Disposable MySQL 8 Instance Note**: Offline Alembic migration SQL Generation (`alembic upgrade head --sql`) verified against MySQL dialect syntax. Direct network concurrency tests against the local MySQL instance require active DB credentials (`MySQL80` service running locally).
+* **Second-Level Safety Remediation Verification**:
+  1. **Crash After MT5 Fill Before DB Commit (`test_recovery_reconciles_broker_position_and_prevents_duplicate_order`)**:
+     - *Verified*: Post-startup reconciliation queries live broker positions, automatically imports untracked positions into MySQL, and webhook recovery cross-checks broker positions to suppress duplicate orders.
+  2. **Uncertain Execution Outcomes (`test_uncertain_broker_execution_outcome_never_resubmits`)**:
+     - *Verified*: Retcodes indicating connection timeout (10006) or requote flag the order as `UNCERTAIN` and block automatic retry.
+  3. **Daily Loss & Floating Drawdown Scenarios (`test_daily_loss_circuit_breaker_representative_scenarios`)**:
+     - *Verified*: Circuit breaker tested against positive PnL, moderate loss, daily loss breach ($350 > $300), and large floating drawdown (-$350).
+  4. **Database Unavailability (`test_database_unavailability_blocks_new_orders`)**:
+     - *Verified*: Engine fails closed when database queries fail.
 
 ### 12. README Audit
-* `README.md` has been verified to accurately represent the folder tree, commands, environment variables, and migration workflows.
+* `README.md` accurately represents folder tree, scripts, and environment variable schema.
 
 ---
 
@@ -108,14 +104,17 @@ Traced the complete sequential pipeline:
 
 | Feature / Domain | Verification Status | Evidence / Test Details |
 | :--- | :--- | :--- |
-| **Daily Loss Enforcement & Circuit Breaker** | **VERIFIED** | Unit & regression tests pass (`test_daily_loss_limit_blocks_new_orders`). Query sum from `trades` + open floating PnL tested. |
+| **Daily Loss Enforcement & Circuit Breaker** | **VERIFIED** | Unit & regression tests pass (`test_daily_loss_limit_blocks_new_orders`, `test_daily_loss_circuit_breaker_representative_scenarios`). Query sum from `trades` + open floating PnL tested. |
 | **Risk Cap Backend Ceiling** | **VERIFIED** | Verified through `test_webhook_cannot_increase_risk_beyond_backend_limit` & `test_signal_service_caps_excessive_risk_in_payload`. |
-| **Durable Idempotency & Unique DB Hash** | **VERIFIED** | Enforced via unique constraint on `webhook_events.payload_hash` and verified in `test_persistent_idempotency_database_constraint`. |
+| **Crash Recovery & Reconciliation** | **VERIFIED (Mock Broker)** | Verified in `test_recovery_reconciles_broker_position_and_prevents_duplicate_order`. Reconciliation imports live position into DB and recovery suppresses resubmission. |
+| **Uncertain Execution Handling** | **VERIFIED** | Verified in `test_uncertain_broker_execution_outcome_never_resubmits`. Retcodes flag order as `UNCERTAIN` without blind resubmission. |
+| **Durable Idempotency & Unique DB Hash** | **VERIFIED** | Enforced via unique constraint on `webhook_events.payload_hash` and verified in `test_persistent_idempotency_database_constraint` and `test_database_unique_constraints`. |
 | **Timestamp Formatting & Freshness** | **VERIFIED** | Verified with Unix seconds, milliseconds, ISO 8601, and stale rejection in `TimestampValidator` tests. |
 | **Durable Webhook Startup Recovery** | **VERIFIED** | Verified via `test_durable_webhook_recovery_processes_pending_events`. |
-| **Database Fail-Closed Safety** | **VERIFIED** | Verified via `test_daily_loss_retrieval_failure_fails_closed`. |
+| **Database Fail-Closed Safety** | **VERIFIED** | Verified via `test_daily_loss_retrieval_failure_fails_closed` and `test_database_unavailability_blocks_new_orders`. |
+| **Alembic Offline Migration** | **VERIFIED** | Verified via `python -m alembic upgrade head --sql` producing valid MySQL 8 DDL with unique constraints. |
 | **Live Real-Money Profitability** | **UNVERIFIED (PROHIBITED)** | **No claim of profitability is made.** Real-money trading is disabled; system is locked to DEMO mode. |
-| **VPS 24/7 Long-Term Network Stability** | **UNVERIFIED IN PRODUCTION** | Must be verified during continuous 30-day Demo test run on VPS before going live. |
+| **Live MT5 / Vantage Network Execution** | **UNVERIFIED IN AUTOMATED CI** | Automated tests deliberately use Mock broker to eliminate live account dependencies. Verified only during manual Demo run on Vantage terminal. |
 
 ---
 

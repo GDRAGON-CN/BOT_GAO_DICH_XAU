@@ -126,25 +126,43 @@ class ReconciliationService:
 
 
         # 6. Check Case B: Position OPEN on broker MT5 but NOT recorded as OPEN in DB
-        # (Could be opened manually or crash occurred before DB commit)
+        # (Could be opened manually or crash occurred after MT5 execution before DB commit)
         for ticket, broker_pos in broker_pos_by_ticket.items():
             if ticket not in db_pos_by_ticket:
-                logger.warning(f"Reconciliation: Broker position #{ticket} ({broker_pos.symbol}) untracked in DB open list.")
-                # We log an alert event for auditing
+                logger.warning(
+                    f"Reconciliation: Broker position #{ticket} ({broker_pos.symbol}) untracked in DB open list. "
+                    f"Importing into DB as OPEN position to prevent duplicate retry/orders."
+                )
+                side_enum = PositionSide.LONG if str(broker_pos.side).upper() in ("BUY", "LONG", "0") else PositionSide.SHORT
+                imported_pos = Position(
+                    broker_position_ticket=ticket,
+                    opening_order_id=None,
+                    symbol=broker_pos.symbol,
+                    side=side_enum,
+                    initial_lots=Decimal(str(broker_pos.lots)),
+                    current_lots=Decimal(str(broker_pos.lots)),
+                    entry_price=Decimal(str(broker_pos.entry_price)),
+                    current_stop_loss=Decimal(str(broker_pos.stop_loss)) if broker_pos.stop_loss else None,
+                    current_take_profit=Decimal(str(broker_pos.take_profit)) if broker_pos.take_profit else None,
+                    status=PositionStatus.OPEN,
+                    opened_at=datetime.utcnow()
+                )
+                db.add(imported_pos)
+
                 evt = BotEvent(
                     event_category="RECONCILIATION",
                     previous_state="UNKNOWN",
-                    new_state="DETECTED_ON_BROKER",
+                    new_state="IMPORTED_TO_DB",
                     triggered_by="RECONCILIATION_ENGINE",
                     message=(
-                        f"Detected untracked live MT5 position #{ticket}: {broker_pos.symbol} {broker_pos.side} "
-                        f"{broker_pos.lots} lots @ {broker_pos.entry_price}. Requires observation."
+                        f"Imported untracked live MT5 position #{ticket}: {broker_pos.symbol} {broker_pos.side} "
+                        f"{broker_pos.lots} lots @ {broker_pos.entry_price} into database."
                     ),
                     created_at=datetime.utcnow()
                 )
                 db.add(evt)
                 report["untracked_broker_positions_imported"] += 1
-                report["events_logged"].append(f"Untracked broker position #{ticket} logged")
+                report["events_logged"].append(f"Untracked broker position #{ticket} imported into DB")
 
         await db.commit()
         logger.info(

@@ -41,10 +41,29 @@ class WebhookRecoveryService:
                 broker = get_broker()
                 trading_service = TradingService(broker)
 
+                # Ensure broker state is reconciled first
+                from app.trading.reconciliation_service import ReconciliationService
+                reconciler = ReconciliationService(broker)
+                await reconciler.run_reconciliation(db)
+
+                # Fetch live positions directly from broker to ensure no duplicate orders
+                live_broker_positions = await broker.get_open_positions()
+                broker_symbols_with_positions = {p.symbol.upper() for p in live_broker_positions}
+
                 for event in pending_events:
                     try:
                         logger.info(f"Recovering pending WebhookEvent #{event.id} ({event.event_uuid})...")
                         payload = TradingViewWebhookSchema.model_validate(event.raw_payload)
+
+                        # If broker already holds an open position on this symbol, do NOT blindly resubmit!
+                        if payload.symbol.upper() in broker_symbols_with_positions:
+                            msg = f"Recovery safety: Broker already holds open position for {payload.symbol}. Suppressing blind resubmission."
+                            logger.warning(msg)
+                            event.processing_status = WebhookStatus.REJECTED
+                            event.rejection_reason = msg
+                            await db.commit()
+                            continue
+
                         success, message = await trading_service.handle_webhook_signal(
                             payload=payload,
                             webhook_event_id=event.id,
