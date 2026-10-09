@@ -38,6 +38,19 @@ class MockAsyncSession:
     async def rollback(self):
         pass
 
+    async def execute(self, stmt):
+        class MockResult:
+            def scalar(self):
+                return 0.0
+            def scalars(self):
+                class MockScalars:
+                    def all(self):
+                        return []
+                    def first(self):
+                        return None
+                return MockScalars()
+        return MockResult()
+
 @pytest.fixture
 def mock_db():
     return MockAsyncSession()

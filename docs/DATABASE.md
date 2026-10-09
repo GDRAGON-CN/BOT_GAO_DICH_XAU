@@ -22,7 +22,7 @@ erDiagram
     webhook_events {
         bigint id PK
         string event_uuid UK
-        string payload_hash
+        string payload_hash UK
         string source_ip
         json raw_payload
         enum processing_status

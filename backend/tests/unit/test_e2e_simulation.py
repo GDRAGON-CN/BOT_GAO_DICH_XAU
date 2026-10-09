@@ -53,6 +53,19 @@ class MockDatabaseSession:
     async def rollback(self):
         pass
 
+    async def execute(self, stmt):
+        class MockResult:
+            def scalar(self):
+                return 0.0
+            def scalars(self):
+                class MockScalars:
+                    def all(self):
+                        return []
+                    def first(self):
+                        return None
+                return MockScalars()
+        return MockResult()
+
 @pytest.mark.asyncio
 async def test_complete_end_to_end_flow_zero_risk():
     """

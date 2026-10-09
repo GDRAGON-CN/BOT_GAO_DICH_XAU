@@ -25,7 +25,10 @@ class SignalService:
         - Symbol must be non-empty
         - Action must be strictly BUY or SELL
         - Mandatory Stop Loss must be present and positive
+        - Risk percent cannot exceed configured MAX_RISK_PERCENT_PER_TRADE (clamped or rejected)
         """
+        from app.core.config import settings
+
         if not payload.symbol or not payload.symbol.strip():
             return False, "Symbol is required and cannot be empty"
 
@@ -40,6 +43,16 @@ class SignalService:
 
         if payload.tp is not None and payload.tp <= 0:
             return False, "Take profit (TP) must be positive if specified"
+
+        if payload.risk_percent is not None:
+            if payload.risk_percent <= 0:
+                return False, "Risk percentage must be positive"
+            if payload.risk_percent > settings.MAX_RISK_PERCENT_PER_TRADE:
+                logger.warning(
+                    f"Payload risk_percent {payload.risk_percent}% exceeds limit {settings.MAX_RISK_PERCENT_PER_TRADE}%. "
+                    f"Capping to {settings.MAX_RISK_PERCENT_PER_TRADE}%."
+                )
+                payload.risk_percent = settings.MAX_RISK_PERCENT_PER_TRADE
 
         return True, None
 

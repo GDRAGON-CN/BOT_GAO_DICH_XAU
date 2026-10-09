@@ -28,7 +28,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint('id')
     )
     op.create_index('idx_webhook_events_uuid', 'webhook_events', ['event_uuid'], unique=True)
-    op.create_index('idx_webhook_events_hash', 'webhook_events', ['payload_hash'])
+    op.create_index('idx_webhook_events_hash', 'webhook_events', ['payload_hash'], unique=True)
 
     # 2. Signals
     op.create_table(

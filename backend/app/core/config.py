@@ -58,7 +58,9 @@ class Settings(BaseSettings):
 
     # Risk Engine Rules
     RISK_PERCENT_PER_TRADE: float = 1.0
+    MAX_RISK_PERCENT_PER_TRADE: float = 2.0  # Hard backend ceiling; webhook payload cannot exceed this
     MAX_DAILY_LOSS_PERCENT: float = 3.0
+    INCLUDE_FLOATING_LOSS_IN_DAILY_LOSS: bool = True  # Circuit breaker accounts for realized loss + floating drawdown
     MAX_OPEN_POSITIONS: int = 2
     MAX_LOT_SIZE: float = 1.00
     MIN_LOT_SIZE: float = 0.01
@@ -67,6 +69,9 @@ class Settings(BaseSettings):
     MAX_CONSECUTIVE_LOSSES: int = 3
     COOLDOWN_MINUTES_AFTER_LOSS: int = 30
     ALLOW_TRADING_SESSIONS: List[str] = ["LONDON", "NEW_YORK", "ASIAN"]
+
+    # Webhook & Ingestion Safety
+    ALERT_TIMESTAMP_TOLERANCE_SECONDS: int = 300  # Stale signals older than 5 minutes rejected
 
     # Telegram
     TELEGRAM_BOT_TOKEN: Optional[str] = None

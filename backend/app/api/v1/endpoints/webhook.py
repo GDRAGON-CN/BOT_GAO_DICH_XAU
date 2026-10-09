@@ -61,36 +61,25 @@ async def _handle_webhook_request(
     payload_dict = payload.model_dump()
     payload_hash = deduplication_service.compute_hash(payload_dict)
 
-    # 2. Timestamp Validation (reject stale alerts older than 5 minutes if timestamp provided)
-    if payload.timestamp:
-        try:
-            # Check ISO format or unix timestamp
-            if payload.timestamp.isdigit():
-                alert_ts = float(payload.timestamp)
-                now_ts = datetime.now(timezone.utc).timestamp()
-                if abs(now_ts - alert_ts) > 300: # 5 minutes
-                    logger.warning(f"Rejecting stale alert: timestamp {payload.timestamp} is out of sync by {abs(now_ts - alert_ts):.1f}s")
-                    return {"status": "rejected", "reason": "stale_timestamp", "received": False}
-        except Exception:
-            pass
+    # 2. Strict Timestamp Validation
+    from app.trading.timestamp_validator import TimestampValidator
+    if payload.timestamp or payload.bar_time:
+        ts_to_check = payload.timestamp or payload.bar_time
+        is_fresh, ts_err = TimestampValidator.validate_freshness(ts_to_check)
+        if not is_fresh:
+            logger.warning(f"Rejecting alert due to timestamp violation: {ts_err}")
+            return {"status": "rejected", "reason": ts_err or "invalid_timestamp", "received": False}
 
-    # 3. Idempotency & Duplicate Protection
+    # 3. Fast In-Memory Deduplication Check
     is_dup, elapsed = deduplication_service.is_duplicate(payload_hash)
     if is_dup:
         logger.warning(f"Ignoring duplicate alert ({elapsed:.1f}s ago)")
-        dup_event = WebhookEvent(
-            event_uuid=payload.event_id or str(uuid.uuid4()),
-            payload_hash=payload_hash,
-            source_ip=client_ip,
-            raw_payload=payload_dict,
-            processing_status=WebhookStatus.DUPLICATE,
-            rejection_reason=f"Duplicate received within {elapsed:.1f}s"
-        )
-        db.add(dup_event)
-        await db.commit()
         return {"status": "ignored", "reason": "duplicate_signal", "elapsed_seconds": elapsed, "received": True}
 
-    # 4. Immediate Database Persistence
+    # 4. Immediate Persistent Database Idempotency & Unique Constraint Enforcement
+    from sqlalchemy.exc import IntegrityError
+    from app.repositories.webhook_repo import WebhookRepository
+
     event_uuid = payload.event_id or str(uuid.uuid4())
     event = WebhookEvent(
         event_uuid=event_uuid,
@@ -99,11 +88,34 @@ async def _handle_webhook_request(
         raw_payload=payload_dict,
         processing_status=WebhookStatus.RECEIVED
     )
-    db.add(event)
-    await db.flush()
-    await db.commit()
 
-    # 5. Fast Acknowledgement: Dispatch to Background Task
+    try:
+        db.add(event)
+        await db.commit()
+        await db.refresh(event)
+    except IntegrityError:
+        # Handles concurrent duplicate webhooks and process restart recovery
+        await db.rollback()
+        logger.warning(f"Database idempotency constraint caught duplicate event: uuid={event_uuid}, hash={payload_hash[:10]}...")
+        # Mark in local cache so future requests don't hit DB repeatedly
+        deduplication_service.record_seen(payload_hash)
+
+        # Check existing event status from database without resubmitting order
+        webhook_repo = WebhookRepository(db)
+        existing = await webhook_repo.get_by_hash(payload_hash)
+        existing_status = existing.processing_status.value if existing else "DUPLICATE"
+
+        return {
+            "status": "ignored",
+            "reason": "duplicate_event_key_or_hash",
+            "existing_status": existing_status,
+            "received": True
+        }
+
+    # Record seen in memory
+    deduplication_service.record_seen(payload_hash)
+
+    # 5. Fast Acknowledgement: Dispatch to Background Task (durable status already saved as RECEIVED in DB)
     background_tasks.add_task(_process_signal_async, event.id, payload)
 
     return {

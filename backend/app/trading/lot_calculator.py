@@ -46,8 +46,15 @@ class LotCalculator:
         if price_distance < (symbol_info.point or 0.00001):
             return None, "Stop loss distance is too close to entry price."
 
-        # 2. Compute monetary risk amount
-        risk_pct = risk_percent if (risk_percent and risk_percent > 0) else settings.RISK_PERCENT_PER_TRADE
+        # 2. Compute monetary risk amount with strict backend capping
+        requested_risk = risk_percent if (risk_percent and risk_percent > 0) else settings.RISK_PERCENT_PER_TRADE
+        # Strictly enforce backend maximum risk percentage limit
+        risk_pct = min(requested_risk, settings.MAX_RISK_PERCENT_PER_TRADE)
+        if requested_risk > settings.MAX_RISK_PERCENT_PER_TRADE:
+            logger.warning(
+                f"Requested risk {requested_risk}% exceeds max allowable backend risk {settings.MAX_RISK_PERCENT_PER_TRADE}%. "
+                f"Safely clamped to {risk_pct}%."
+            )
         risk_amount = account.equity * (risk_pct / 100.0)
 
         # 3. Determine loss per 1.0 standard lot

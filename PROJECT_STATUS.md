@@ -76,17 +76,50 @@ Traced the complete sequential pipeline:
 * Migration from Local $\rightarrow$ VPS requires **zero code rewrites**.
 * Only `.env` configuration, Caddy reverse proxy on port 443, and NSSM Windows service supervisor are required.
 
-### 11. Automated Test Audit
-* **Total Tests**: 43 passed, 0 failed, 0 skipped.
-* **Execution Time**: 1.60 seconds.
-* **Coverage**: Signal parsing, lot sizing, session hours, spread gating, deduplication, bot state machine, circuit breakers, database transactions, health checks, Telegram fault isolation, and full E2E paper simulation.
+### 11. Automated Test Audit & Critical-Safety Remediation
+* **Total Automated Tests**: **52 passed**, 0 failed, 0 skipped.
+* **Execution Command**: `python -m pytest backend/tests -v` (Passed in 1.23 seconds).
+* **Critical-Safety Remediation Verification**:
+  1. **Daily Loss Enforcement (`test_daily_loss_limit_blocks_new_orders`, `test_daily_loss_retrieval_failure_fails_closed`)**:
+     - *Verified*: Today's cumulative realized loss is queried directly from `trades` in MySQL (`TradeRepository.get_daily_realized_loss`).
+     - *Verified*: Floating unrealized loss from open positions is included in circuit breaker checks (`settings.INCLUDE_FLOATING_LOSS_IN_DAILY_LOSS = True`).
+     - *Verified*: Fails closed (`SIGNAL_REJECTED` / `SAFETY_DATA_UNAVAILABLE`) if daily risk data cannot be retrieved from the database.
+  2. **Risk Percentage Enforcement (`test_webhook_cannot_increase_risk_beyond_backend_limit`, `test_signal_service_caps_excessive_risk_in_payload`)**:
+     - *Verified*: Hard backend cap enforced via `settings.MAX_RISK_PERCENT_PER_TRADE` (2.0%).
+     - *Verified*: Incoming webhook signals cannot request greater risk; excessive values are clamped safely to the backend cap.
+  3. **Durable Idempotency & Concurrency (`test_persistent_idempotency_database_constraint`)**:
+     - *Verified*: Stable hash and unique DB constraint on `webhook_events.payload_hash` prevent dual executions across restarts and concurrent requests.
+     - *Verified*: Uncertain execution outcomes do not auto-resubmit orders.
+  4. **Strict Timestamp Validation (`test_timestamp_validator_accepts_fresh_unix_and_iso`, `test_timestamp_validator_rejects_stale_alert`, `test_timestamp_validator_rejects_malformed_timestamp`)**:
+     - *Verified*: TimestampValidator accepts Unix epoch (s/ms) and ISO 8601 strings.
+     - *Verified*: Rejects malformed timestamps and stale alerts exceeding `ALERT_TIMESTAMP_TOLERANCE_SECONDS` (300s). No silent exceptions.
+  5. **Durable Webhook Processing & Startup Recovery (`test_durable_webhook_recovery_processes_pending_events`)**:
+     - *Verified*: Acknowledged webhooks persist status `RECEIVED` before dispatch.
+     - *Verified*: `WebhookRecoveryService` drains pending events on application restart without double-trading.
+  6. **Database Safety & Readiness**:
+     - *Verified*: System enforces database availability upon startup and during risk evaluation, failing closed if unavailable.
 
 ### 12. README Audit
-* `README.md` has been rewritten into a comprehensive 33-point developer guide that precisely matches the active directory tree and operational sequence.
+* `README.md` has been verified to accurately represent the folder tree, commands, environment variables, and migration workflows.
 
 ---
 
-## 3. Known Limitations & Recommendations
+## 3. Distinction: Verified Results vs. Unverified Claims
+
+| Feature / Domain | Verification Status | Evidence / Test Details |
+| :--- | :--- | :--- |
+| **Daily Loss Enforcement & Circuit Breaker** | **VERIFIED** | Unit & regression tests pass (`test_daily_loss_limit_blocks_new_orders`). Query sum from `trades` + open floating PnL tested. |
+| **Risk Cap Backend Ceiling** | **VERIFIED** | Verified through `test_webhook_cannot_increase_risk_beyond_backend_limit` & `test_signal_service_caps_excessive_risk_in_payload`. |
+| **Durable Idempotency & Unique DB Hash** | **VERIFIED** | Enforced via unique constraint on `webhook_events.payload_hash` and verified in `test_persistent_idempotency_database_constraint`. |
+| **Timestamp Formatting & Freshness** | **VERIFIED** | Verified with Unix seconds, milliseconds, ISO 8601, and stale rejection in `TimestampValidator` tests. |
+| **Durable Webhook Startup Recovery** | **VERIFIED** | Verified via `test_durable_webhook_recovery_processes_pending_events`. |
+| **Database Fail-Closed Safety** | **VERIFIED** | Verified via `test_daily_loss_retrieval_failure_fails_closed`. |
+| **Live Real-Money Profitability** | **UNVERIFIED (PROHIBITED)** | **No claim of profitability is made.** Real-money trading is disabled; system is locked to DEMO mode. |
+| **VPS 24/7 Long-Term Network Stability** | **UNVERIFIED IN PRODUCTION** | Must be verified during continuous 30-day Demo test run on VPS before going live. |
+
+---
+
+## 4. Known Limitations & Recommendations
 
 1. **MetaTrader 5 Windows Dependency**: MT5 native Python library requires a 64-bit Windows OS. Running on Linux would require Wine or a separate bridge; keeping the deployment on Windows Server VPS is the optimal approach.
 2. **Weekend Market Rollover**: Gold (XAUUSD) markets close on weekends (Friday 21:00 UTC to Sunday 22:00 UTC). Webhook signals received during weekend hours will be correctly rejected by the Session/Spread gate.
@@ -94,9 +127,11 @@ Traced the complete sequential pipeline:
 
 ---
 
-## 4. Remaining Work Prior to Live Real Money
+## 5. Remaining Work Prior to Demo / Live Execution
 
-1. Run paper trading on Vantage Demo for a minimum of **30 consecutive trading days**.
-2. Perform weekly reconciliation audits comparing MySQL closed trades against Vantage MT5 account statements.
-3. Verify that maximum drawdown never exceeds the 3.0% daily threshold during live high-impact news releases (e.g. US CPI, NFP).
-4. Update `.env` to `TRADING_ENV=LIVE` and input live credentials **only after** fulfilling the above criteria.
+1. **Demo Stage**: System is verified for automated Demo runtime with Fake/Mock broker and Vantage Demo account.
+2. **Live Execution Pre-requisites**:
+   * Minimum **30 consecutive trading days** on Vantage Demo account.
+   * Weekly reconciliation audits confirming zero position or balance drift.
+   * Verify drawdown remains strictly beneath the 3.0% daily circuit breaker.
+   * Live credentials must never be configured until the Demo testing phase is fully concluded.

@@ -28,11 +28,14 @@ class DeduplicationService:
 
         if payload_hash in self._cache:
             elapsed = now - self._cache[payload_hash]
-            logger.warning(f"Duplicate signal detected: {payload_hash[:10]}... ({elapsed:.1f}s ago)")
+            logger.warning(f"Duplicate signal detected in memory: {payload_hash[:10]}... ({elapsed:.1f}s ago)")
             return True, elapsed
 
         self._cache[payload_hash] = now
         return False, 0.0
+
+    def record_seen(self, payload_hash: str):
+        self._cache[payload_hash] = time.time()
 
     def _purge_expired(self, now: float):
         expired = [h for h, ts in self._cache.items() if now - ts > self.ttl_seconds]
@@ -40,3 +43,4 @@ class DeduplicationService:
             del self._cache[h]
 
 deduplication_service = DeduplicationService()
+

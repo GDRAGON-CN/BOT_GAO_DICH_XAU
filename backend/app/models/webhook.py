@@ -10,7 +10,7 @@ class WebhookEvent(Base):
     id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
 
     event_uuid = Column(String(36), unique=True, nullable=False, index=True)
-    payload_hash = Column(String(64), nullable=False, index=True)
+    payload_hash = Column(String(64), unique=True, nullable=False, index=True)
     source_ip = Column(String(45), nullable=True)
     raw_payload = Column(JSON, nullable=False)
     processing_status = Column(Enum(WebhookStatus), default=WebhookStatus.RECEIVED, nullable=False, index=True)

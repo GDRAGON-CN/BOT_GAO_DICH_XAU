@@ -135,13 +135,49 @@ class ExecutionService:
             await db.commit()
             return False, reason
 
-        # 6. Risk Engine & Lot Validation
+        # 6. Risk Engine & Lot Validation with Daily Loss Enforcement
+        try:
+            from app.repositories.trade_repo import TradeRepository
+            trade_repo = TradeRepository(db)
+            daily_realized_loss = await trade_repo.get_daily_realized_loss()
+
+            # Include floating loss from open positions if configured
+            daily_floating_loss = 0.0
+            if settings.INCLUDE_FLOATING_LOSS_IN_DAILY_LOSS:
+                # Any open position with negative profit adds to total drawdown
+                for pos in open_positions:
+                    if pos.profit is not None and pos.profit < 0:
+                        daily_floating_loss += abs(float(pos.profit))
+
+            effective_daily_loss = daily_realized_loss + daily_floating_loss
+        except Exception as risk_data_err:
+            reason = f"Fail closed: Unable to retrieve risk data (daily loss/drawdown): {risk_data_err}"
+            logger.error(reason)
+            signal_entity.status = SignalStatus.REJECTED_RISK
+            signal_entity.rejection_reason = reason
+            risk_evt = RiskEvent(
+                signal_id=signal_entity.id,
+                event_type=RiskEventType.BOT_STATE_RESTRICTION,
+                rule_name="SAFETY_DATA_UNAVAILABLE",
+                threshold_value="",
+                actual_value="",
+                system_action_taken=RiskAction.SIGNAL_REJECTED,
+                details={"reason": reason}
+            )
+            db.add(risk_evt)
+            await db.commit()
+            telegram_bot.notify_risk_rejection(
+                rule_name="SAFETY_DATA_UNAVAILABLE",
+                details=f"{payload.symbol} {payload.action.value} - {reason}"
+            )
+            return False, reason
+
         risk_res = await self.risk.validate_signal(
             payload=payload,
             account=account,
             symbol_info=symbol_info,
             open_positions_count=len(open_positions),
-            daily_loss_realized=0.0
+            daily_loss_realized=effective_daily_loss
         )
 
         if not risk_res.is_valid:

@@ -20,14 +20,19 @@ async def lifespan(app: FastAPI):
     from app.notifications.telegram_bot import telegram_bot
     telegram_bot.notify_app_startup(env=settings.APP_ENV, version="1.0.0")
 
-    # 1. Database table sync
+    # 1. Database table sync & readiness verification
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database synchronized.")
+        logger.info("Database synchronized and readiness verified.")
     except Exception as e:
-        logger.warning(f"MySQL connection warning: {e}. Running in decoupled mode.")
+        logger.critical(f"FATAL: Database connection/synchronization failed: {e}. System cannot guarantee durable execution.")
         telegram_bot.notify_database_error(str(e))
+        # In production, we fail closed because trading without durable persistence is unsafe
+        if settings.APP_ENV == "production":
+            raise RuntimeError(f"Database unavailable: {e}") from e
+        else:
+            logger.warning("Local non-production mode: proceeding with caution.")
 
     # 2. Broker adapter initialization & Startup Reconciliation
     broker = get_broker()
@@ -48,6 +53,15 @@ async def lifespan(app: FastAPI):
                     await reconciler.run_reconciliation(db)
             except Exception as rec_err:
                 logger.error(f"Post-startup reconciliation encountered error: {rec_err}")
+
+            # 4. Durable Webhook Processing Recovery (Drain pending unhandled events)
+            try:
+                from app.trading.recovery_service import webhook_recovery_service
+                recovered = await webhook_recovery_service.recover_pending_events()
+                if recovered > 0:
+                    logger.info(f"Durable webhook recovery recovered {recovered} pending events on startup.")
+            except Exception as recovery_err:
+                logger.error(f"Durable webhook recovery error: {recovery_err}")
         else:
             logger.warning("Broker adapter initialization returned False.")
             telegram_bot.notify_mt5_disconnected("Broker adapter initialization returned False")
