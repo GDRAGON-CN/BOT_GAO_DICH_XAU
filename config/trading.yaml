@@ -1,0 +1,12 @@
+# Trading Parameters Configuration
+symbol:
+  default: "XAUUSD"
+  description: "Gold vs US Dollar"
+  magic_number: 123456
+  comment_prefix: "GoldBot"
+
+execution:
+  order_type: "MARKET"
+  filling_mode: "IOC"
+  slippage_points: 20.0
+  timeout_ms: 10000

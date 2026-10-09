@@ -1,0 +1,23 @@
+# Trading Sessions and Market Hours (UTC)
+allowed_sessions:
+  - "LONDON"
+  - "NEW_YORK"
+  - "ASIAN"
+
+sessions:
+  ASIAN:
+    start_utc: "00:00"
+    end_utc: "09:00"
+  LONDON:
+    start_utc: "07:00"
+    end_utc: "16:00"
+  NEW_YORK:
+    start_utc: "12:00"
+    end_utc: "21:00"
+
+spread_protection:
+  max_spread_points: 35.0
+
+blackout_periods:
+  weekend_close_friday_utc: "21:45"
+  weekend_open_sunday_utc: "22:00"

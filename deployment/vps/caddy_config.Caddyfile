@@ -1,0 +1,36 @@
+# Caddyfile for Windows VPS Production Reverse Proxy
+# Automatic HTTPS via Let's Encrypt / ZeroSSL
+
+tradebot.yourdomain.com {
+    # 1. TradingView Webhook & Public API Proxy (Strictly limited to application endpoints)
+    handle /api/* {
+        reverse_proxy 127.0.0.1:8000 {
+            header_up X-Forwarded-Proto https
+            header_up X-Real-IP {remote_host}
+        }
+    }
+
+    # 2. Production React Dashboard (Static build served locally)
+    handle {
+        root * C:\tradebot\frontend\dist
+        file_server
+        try_files {path} /index.html
+    }
+
+    # 3. Security Headers
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+    # 4. Access & Error Logging
+    log {
+        output file C:\caddy\logs\tradebot_access.log {
+            roll_size 20MB
+            roll_keep 10
+            roll_keep_days 30
+        }
+    }
+}

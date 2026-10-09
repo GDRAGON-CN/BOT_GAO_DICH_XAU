@@ -1,0 +1,122 @@
+//@version=5
+strategy("XAUUSD Modular Gold Strategy Engine", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=1.0)
+
+// ==============================================================================
+// 1. CONFIGURABLE STRATEGY PARAMETERS
+// ==============================================================================
+var G_STRAT = "Strategy General Configuration"
+strategyId     = input.string("gold_m15_v1", title="Strategy Identifier", group=G_STRAT)
+symbolTicker   = input.string("XAUUSD", title="Trading Instrument", group=G_STRAT)
+riskPerTrade   = input.float(1.0, title="Risk Per Trade (%)", minval=0.1, maxval=5.0, step=0.1, group=G_STRAT)
+rrRatio        = input.float(2.0, title="Risk/Reward Ratio (TP/SL)", minval=1.0, step=0.1, group=G_STRAT)
+atrMultiplier  = input.float(1.5, title="ATR Multiplier for Stop Loss", minval=0.5, step=0.1, group=G_STRAT)
+secretToken    = input.string("", title="Webhook Secret (Configure in Alert or here)", group=G_STRAT)
+
+var G_INDICATORS = "Technical Indicators & Filters"
+useEmaFilter   = input.bool(true, title="Enable Dual EMA Trend Filter", group=G_INDICATORS)
+emaFastLen     = input.int(9, title="Fast EMA Period", group=G_INDICATORS)
+emaSlowLen     = input.int(21, title="Slow EMA Period", group=G_INDICATORS)
+
+useRsiFilter   = input.bool(true, title="Enable RSI Momentum Filter", group=G_INDICATORS)
+rsiLen         = input.int(14, title="RSI Period", group=G_INDICATORS)
+rsiLongLevel   = input.int(50, title="RSI Long Threshold (>)", group=G_INDICATORS)
+rsiShortLevel  = input.int(50, title="RSI Short Threshold (<)", group=G_INDICATORS)
+
+useBbFilter    = input.bool(false, title="Enable Bollinger Bands Volatility Filter", group=G_INDICATORS)
+bbLen          = input.int(20, title="BB Length", group=G_INDICATORS)
+bbMult         = input.float(2.0, title="BB StdDev", group=G_INDICATORS)
+
+useFvgFilter   = input.bool(false, title="Enable Fair Value Gap (FVG) Filter", group=G_INDICATORS)
+
+// ==============================================================================
+// 2. INDICATOR COMPUTATIONS
+// ==============================================================================
+// ATR
+atrValue = ta.atr(14)
+
+// EMA
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+
+// RSI
+rsiValue = ta.rsi(close, rsiLen)
+
+// Bollinger Bands
+[bbMiddle, bbUpper, bbLower] = ta.bb(close, bbLen, bbMult)
+
+// Fair Value Gap (FVG) Detection
+bullishFvg = high[2] < low[0]
+bearishFvg = low[2] > high[0]
+
+// Visual indicators on chart
+plot(emaFast, title="EMA Fast", color=color.new(color.yellow, 0), linewidth=2)
+plot(emaSlow, title="EMA Slow", color=color.new(color.blue, 0), linewidth=2)
+plot(bbUpper, title="BB Upper", color=color.new(color.gray, 60))
+plot(bbLower, title="BB Lower", color=color.new(color.gray, 60))
+
+// ==============================================================================
+// 3. MODULAR ENTRY CONDITIONS
+// ==============================================================================
+emaLongOk  = not useEmaFilter or (emaFast > emaSlow and ta.crossover(emaFast, emaSlow))
+emaShortOk = not useEmaFilter or (emaFast < emaSlow and ta.crossunder(emaFast, emaSlow))
+
+rsiLongOk  = not useRsiFilter or (rsiValue >= rsiLongLevel)
+rsiShortOk = not useRsiFilter or (rsiValue <= rsiShortLevel)
+
+bbLongOk   = not useBbFilter or (close > bbMiddle)
+bbShortOk  = not useBbFilter or (close < bbMiddle)
+
+fvgLongOk  = not useFvgFilter or bullishFvg
+fvgShortOk = not useFvgFilter or bearishFvg
+
+longTrigger  = emaLongOk and rsiLongOk and bbLongOk and fvgLongOk
+shortTrigger = emaShortOk and rsiShortOk and bbShortOk and fvgShortOk
+
+// ==============================================================================
+// 4. STOP LOSS & TAKE PROFIT CALCULATION
+// ==============================================================================
+var float calculatedSL = na
+var float calculatedTP = na
+
+if (longTrigger and strategy.position_size == 0)
+    calculatedSL := math.round_to_mintick(close - (atrValue * atrMultiplier))
+    calculatedTP := math.round_to_mintick(close + ((close - calculatedSL) * rrRatio))
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Exit Long", "Long", stop=calculatedSL, limit=calculatedTP)
+
+    // Construct Stable Canonical JSON Payload
+    // Uses event_id, symbol, action, timeframe, entry, stop_loss, take_profit, strategy, timestamp
+    alertPayloadBuy = '{"event_id":"' + str.tostring(time) + '_' + strategyId + '_BUY"' +
+      ',"symbol":"' + symbolTicker + '"' +
+      ',"action":"BUY"' +
+      ',"timeframe":"' + timeframe.period + '"' +
+      ',"entry":' + str.tostring(close, "#.##") +
+      ',"stop_loss":' + str.tostring(calculatedSL, "#.##") +
+      ',"take_profit":' + str.tostring(calculatedTP, "#.##") +
+      ',"strategy":"' + strategyId + '"' +
+      ',"risk_percent":' + str.tostring(riskPerTrade, "#.#") +
+      ',"timestamp":"' + str.tostring(math.round(timenow / 1000)) + '"' +
+      ',"secret":"' + secretToken + '"}'
+
+    alert(alertPayloadBuy, alert.freq_once_per_bar_close)
+
+if (shortTrigger and strategy.position_size == 0)
+    calculatedSL := math.round_to_mintick(close + (atrValue * atrMultiplier))
+    calculatedTP := math.round_to_mintick(close - ((calculatedSL - close) * rrRatio))
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Exit Short", "Short", stop=calculatedSL, limit=calculatedTP)
+
+    // Construct Stable Canonical JSON Payload
+    alertPayloadSell = '{"event_id":"' + str.tostring(time) + '_' + strategyId + '_SELL"' +
+      ',"symbol":"' + symbolTicker + '"' +
+      ',"action":"SELL"' +
+      ',"timeframe":"' + timeframe.period + '"' +
+      ',"entry":' + str.tostring(close, "#.##") +
+      ',"stop_loss":' + str.tostring(calculatedSL, "#.##") +
+      ',"take_profit":' + str.tostring(calculatedTP, "#.##") +
+      ',"strategy":"' + strategyId + '"' +
+      ',"risk_percent":' + str.tostring(riskPerTrade, "#.#") +
+      ',"timestamp":"' + str.tostring(math.round(timenow / 1000)) + '"' +
+      ',"secret":"' + secretToken + '"}'
+
+    alert(alertPayloadSell, alert.freq_once_per_bar_close)
